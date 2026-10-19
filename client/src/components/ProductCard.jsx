@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { Heart, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { addToWishlist, getWishlist } from '../services/ProductService';
+import { addToWishlist, removeFromWishlist, getWishlist } from '../services/ProductService';
 import { getScoreColor } from '../utils/helpers';
 
 export default function ProductCard({ product, onWishlistAdd }) {
@@ -13,7 +13,11 @@ export default function ProductCard({ product, onWishlistAdd }) {
   const isWishlisted = wishlist.some((p) => p.id === product.id);
 
   const handleWishlist = () => {
-    addToWishlist(product);
+    if (isWishlisted) {
+      removeFromWishlist(product.id);
+    } else {
+      addToWishlist(product);
+    }
     if (onWishlistAdd) onWishlistAdd(product);
   };
 

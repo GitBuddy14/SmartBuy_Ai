@@ -30,7 +30,7 @@ export default function Message({ message }) {
         {isUser && message.imageBase64 && (
           <div className="mb-2 flex justify-end">
             <img
-              src={`data:image/jpeg;base64,${message.imageBase64}`}
+              src={message.imageBase64.startsWith('data:') ? message.imageBase64 : `data:image/jpeg;base64,${message.imageBase64}`}
               alt="Uploaded product"
               className="max-w-[200px] max-h-[200px] rounded-lg border border-gray-200 dark:border-gray-700 object-cover"
             />
@@ -60,11 +60,19 @@ export default function Message({ message }) {
                       {children}
                     </a>
                   ),
-                  // Style inline code
-                  code: ({ inline, children }) =>
-                    inline
-                      ? <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs font-mono">{children}</code>
-                      : <code>{children}</code>,
+                  // Style inline code (react-markdown v9 compatibility)
+                  code: ({ className, children, ...props }) => {
+                    const isInline = !className && !String(children).includes('\n');
+                    return isInline ? (
+                      <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs font-mono" {...props}>
+                        {children}
+                      </code>
+                    ) : (
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    );
+                  },
                 }}
               >
                 {message.content}

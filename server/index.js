@@ -14,7 +14,26 @@
  *   DELETE /api/alerts/:id — remove alert
  */
 
-require('dotenv').config();
+const path = require('path');
+const fs = require('fs');
+
+// Try server/.env first, then root .env
+const serverEnv = path.resolve(__dirname, '.env');
+const rootEnv = path.resolve(__dirname, '..', '.env');
+
+if (fs.existsSync(serverEnv)) {
+  require('dotenv').config({ path: serverEnv });
+} else if (fs.existsSync(rootEnv)) {
+  require('dotenv').config({ path: rootEnv });
+} else {
+  require('dotenv').config();
+}
+
+// Fallback in case of variable name variations
+if (!process.env.GROQ_API_KEY && process.env.GROK_API_KEY) {
+  process.env.GROQ_API_KEY = process.env.GROK_API_KEY;
+}
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -26,7 +45,31 @@ const PORT = process.env.PORT || 5000;
 // ─────────────────────────────────────────────
 // Middleware
 // ─────────────────────────────────────────────
-app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:4173'] }));
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:4173',
+  'http://127.0.0.1:3000',
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+      callback(null, true); // Permissive in dev
+    },
+    credentials: true,
+  })
+);
+
 app.use(express.json({ limit: '10mb' })); // allow image uploads as base64
 
 // Rate limiting — 100 requests per 15 min per IP
@@ -38,83 +81,121 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // ─────────────────────────────────────────────
-// Groq API config
+// Groq API config & Model Candidate Selection
 // ─────────────────────────────────────────────
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.3-70b-versatile'; // Updated: llama3-70b-8192 decommissioned
+const PRIMARY_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
+const FALLBACK_MODELS = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+
+// Unique candidate models to try in order
+const MODEL_CANDIDATES = Array.from(new Set([PRIMARY_MODEL, ...FALLBACK_MODELS]));
 
 // ─────────────────────────────────────────────
-// Helper: call Groq
+// Helper: call Groq with model fallback
 // ─────────────────────────────────────────────
-async function callGroq(systemPrompt, userContent, maxTokens = 2048) {
+async function callGroqWithModelFallback(messages, maxTokens = 2048) {
   if (!GROQ_API_KEY) {
     throw new Error('GROQ_API_KEY is not set in environment variables.');
   }
 
+  let lastError = null;
+
+  for (const model of MODEL_CANDIDATES) {
+    try {
+      const response = await axios.post(
+        GROQ_API_URL,
+        {
+          model,
+          messages,
+          max_tokens: maxTokens,
+          temperature: 0.7,
+          top_p: 0.9,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${GROQ_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 55000,
+        }
+      );
+
+      const choice = response.data.choices?.[0];
+      if (!choice || !choice.message) {
+        throw new Error('Invalid response received from Groq API');
+      }
+
+      return {
+        content: choice.message.content || '',
+        usage: response.data.usage,
+        model: response.data.model || model,
+      };
+    } catch (err) {
+      lastError = err;
+      const errorMsg = err.response?.data?.error?.message || err.message || '';
+      console.warn(`[Groq] Model "${model}" failed: ${errorMsg}. Trying fallback...`);
+      if (err.response?.status === 401) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError || new Error('All Groq model attempts failed.');
+}
+
+async function callGroq(systemPrompt, userContent, maxTokens = 2048) {
   const messages = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userContent },
   ];
-
-  const response = await axios.post(
-    GROQ_API_URL,
-    {
-      model: GROQ_MODEL,
-      messages,
-      max_tokens: maxTokens,
-      temperature: 0.7,
-      top_p: 0.9,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 55000,
-    }
-  );
-
-  return response.data.choices[0].message.content;
+  const res = await callGroqWithModelFallback(messages, maxTokens);
+  return res.content;
 }
 
-// ─────────────────────────────────────────────
-// Helper: call Groq with full message history
-// ─────────────────────────────────────────────
 async function callGroqWithHistory(systemPrompt, messages, maxTokens = 2048) {
-  if (!GROQ_API_KEY) {
-    throw new Error('GROQ_API_KEY is not set in environment variables.');
-  }
-
   const allMessages = [
     { role: 'system', content: systemPrompt },
     ...messages,
   ];
+  return await callGroqWithModelFallback(allMessages, maxTokens);
+}
 
-  const response = await axios.post(
-    GROQ_API_URL,
-    {
-      model: GROQ_MODEL,
-      messages: allMessages,
-      max_tokens: maxTokens,
-      temperature: 0.7,
-      top_p: 0.9,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 55000,
+// ─────────────────────────────────────────────
+// Helper: safe JSON parsing
+// ─────────────────────────────────────────────
+function parseJsonSafely(rawText, expectedType = 'object') {
+  if (!rawText || typeof rawText !== 'string') return expectedType === 'array' ? [] : {};
+
+  // Strip markdown code fences if present
+  let cleaned = rawText.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+
+  // Try direct parse first
+  try {
+    return JSON.parse(cleaned);
+  } catch (_) {
+    // Continue with regex extraction
+  }
+
+  // Extract array or object
+  const regex = expectedType === 'array' ? /\[[\s\S]*\]/ : /\{[\s\S]*\}/;
+  const match = cleaned.match(regex);
+  if (match) {
+    let jsonStr = match[0].trim();
+    try {
+      return JSON.parse(jsonStr);
+    } catch (e1) {
+      // Clean trailing commas before closing braces/brackets
+      try {
+        jsonStr = jsonStr.replace(/,\s*([}\]])/g, '$1');
+        return JSON.parse(jsonStr);
+      } catch (e2) {
+        console.warn('[parseJsonSafely] Failed to parse JSON snippet:', e2.message);
+      }
     }
-  );
+  }
 
-  const choice = response.data.choices[0];
-  return {
-    content: choice.message.content,
-    usage: response.data.usage,
-    model: response.data.model,
-  };
+  return expectedType === 'array' ? [] : { rawContent: rawText };
 }
 
 // ─────────────────────────────────────────────
@@ -171,7 +252,7 @@ Format as JSON array:
     "priceRange": "₹X,XXX - ₹Y,YYY",
     "rating": "4.2/5",
     "highlights": ["feature1", "feature2"],
-    "buyNow": true/false,
+    "buyNow": true,
     "reason": "brief reason"
   }
 ]
@@ -216,12 +297,12 @@ const PRICE_SYSTEM_PROMPT = `You are a price analyst for Indian e-commerce. Anal
 
 Return JSON:
 {
-  "recommendation": "BUY NOW" or "WAIT" or "UPCOMING SALE",
+  "recommendation": "BUY NOW",
   "currentPriceRange": "₹X - ₹Y",
   "expectedDrop": "X%",
   "bestTimeMonth": "Month name",
   "upcomingSale": "Sale event name",
-  "confidence": "High/Medium/Low",
+  "confidence": "High",
   "reasoning": "explanation"
 }
 
@@ -231,16 +312,16 @@ const REVIEW_SYSTEM_PROMPT = `You are a review authenticity analyst. Analyze the
 
 Return JSON:
 {
-  "fakePercentage": number 0-100,
-  "realPercentage": number 0-100,
-  "confidence": number 0-100,
-  "label": "Likely Genuine" or "Suspicious" or "Likely Fake",
-  "positiveCount": estimated number,
-  "negativeCount": estimated number,
-  "spamCount": estimated number,
+  "fakePercentage": 20,
+  "realPercentage": 80,
+  "confidence": 85,
+  "label": "Likely Genuine",
+  "positiveCount": 1200,
+  "negativeCount": 150,
+  "spamCount": 50,
   "signals": ["signal1", "signal2"],
   "reason": "explanation",
-  "overallSentiment": "Positive/Negative/Mixed"
+  "overallSentiment": "Positive"
 }
 
 Return ONLY valid JSON.`;
@@ -250,13 +331,13 @@ const ALTERNATIVES_SYSTEM_PROMPT = `You are a product recommendation expert. Fin
 Return JSON:
 {
   "betterProducts": [
-    {"name": "...", "price": "₹...", "reason": "why it's better", "rating": "X/5"}
+    {"name": "...", "price": "₹...", "reason": "why it's better", "rating": "4.5/5"}
   ],
   "cheaperProducts": [
-    {"name": "...", "price": "₹...", "reason": "cheaper but decent", "rating": "X/5"}
+    {"name": "...", "price": "₹...", "reason": "cheaper but decent", "rating": "4.1/5"}
   ],
   "premiumProducts": [
-    {"name": "...", "price": "₹...", "reason": "premium option", "rating": "X/5"}
+    {"name": "...", "price": "₹...", "reason": "premium option", "rating": "4.8/5"}
   ]
 }
 
@@ -276,7 +357,8 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     groqConfigured: !!GROQ_API_KEY,
-    model: GROQ_MODEL,
+    model: PRIMARY_MODEL,
+    activeCandidates: MODEL_CANDIDATES,
     timestamp: new Date().toISOString(),
   });
 });
@@ -286,27 +368,37 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { messages = [], userMessage, imageBase64, systemPrompt } = req.body;
 
-    if (!userMessage && !imageBase64) {
+    if (!userMessage && !imageBase64 && (!messages || messages.length === 0)) {
       return res.status(400).json({ error: 'userMessage is required' });
     }
 
-    // Build message history for Groq
-    // If image provided, use vision-capable approach (describe image in prompt)
-    let groqMessages = messages.map((m) => ({
+    let groqMessages = (messages || []).map((m) => ({
       role: m.role,
-      content: m.content,
+      content: m.content || '',
     }));
 
-    // If there's an image, append a system note about it
-    if (imageBase64) {
-      // Groq llama models don't support vision directly, so we add context
-      const imageNote = userMessage
-        ? `${userMessage}\n\n[User has uploaded a product image. Based on common products, analyze and recommend similar items, alternatives, and pricing.]`
-        : '[User uploaded a product image. Analyze it as a product and provide shopping recommendations, price estimates, alternatives, and buying advice.]';
+    // If userMessage is provided and is not already the last user message, append it
+    const lastMsg = groqMessages[groqMessages.length - 1];
+    if (userMessage && (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== userMessage)) {
+      groqMessages.push({ role: 'user', content: userMessage });
+    }
 
-      // Replace last user message with image context
-      groqMessages = groqMessages.filter((m, i) => i < groqMessages.length - 1);
-      groqMessages.push({ role: 'user', content: imageNote });
+    // If there's an image, append context note
+    if (imageBase64) {
+      const imageNote =
+        '[User uploaded a product image. Analyze this product, recommend similar items, compare pricing in ₹, and provide shopping advice.]';
+      if (groqMessages.length > 0 && groqMessages[groqMessages.length - 1].role === 'user') {
+        const lastContent = groqMessages[groqMessages.length - 1].content;
+        groqMessages[groqMessages.length - 1].content = lastContent
+          ? `${lastContent}\n\n${imageNote}`
+          : imageNote;
+      } else {
+        groqMessages.push({ role: 'user', content: imageNote });
+      }
+    }
+
+    if (groqMessages.length === 0) {
+      return res.status(400).json({ error: 'No message content provided' });
     }
 
     const result = await callGroqWithHistory(
@@ -337,15 +429,7 @@ app.post('/api/search', async (req, res) => {
       1024
     );
 
-    let products = [];
-    try {
-      // Extract JSON from response
-      const jsonMatch = content.match(/\[[\s\S]*\]/);
-      if (jsonMatch) products = JSON.parse(jsonMatch[0]);
-    } catch {
-      products = [];
-    }
-
+    const products = parseJsonSafely(content, 'array');
     res.json({ query, products, rawContent: content });
   } catch (error) {
     console.error('[/api/search] Error:', error.message);
@@ -367,14 +451,7 @@ app.post('/api/compare', async (req, res) => {
       1024
     );
 
-    let comparison = {};
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) comparison = JSON.parse(jsonMatch[0]);
-    } catch {
-      comparison = { rawContent: content };
-    }
-
+    const comparison = parseJsonSafely(content, 'object');
     res.json(comparison);
   } catch (error) {
     console.error('[/api/compare] Error:', error.message);
@@ -394,14 +471,7 @@ app.post('/api/price', async (req, res) => {
       512
     );
 
-    let prediction = {};
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) prediction = JSON.parse(jsonMatch[0]);
-    } catch {
-      prediction = { rawContent: content };
-    }
-
+    const prediction = parseJsonSafely(content, 'object');
     res.json(prediction);
   } catch (error) {
     console.error('[/api/price] Error:', error.message);
@@ -425,14 +495,7 @@ app.post('/api/reviews', async (req, res) => {
       512
     );
 
-    let analysis = {};
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) analysis = JSON.parse(jsonMatch[0]);
-    } catch {
-      analysis = { rawContent: content };
-    }
-
+    const analysis = parseJsonSafely(content, 'object');
     res.json(analysis);
   } catch (error) {
     console.error('[/api/reviews] Error:', error.message);
@@ -453,14 +516,7 @@ app.post('/api/alternatives', async (req, res) => {
       768
     );
 
-    let alternatives = {};
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) alternatives = JSON.parse(jsonMatch[0]);
-    } catch {
-      alternatives = { rawContent: content };
-    }
-
+    const alternatives = parseJsonSafely(content, 'object');
     res.json(alternatives);
   } catch (error) {
     console.error('[/api/alternatives] Error:', error.message);
@@ -516,10 +572,13 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 // Start
 // ─────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n🛍️  SmartBuy AI Server running on http://localhost:${PORT}`);
-  console.log(`📡  Groq API Key: ${GROQ_API_KEY ? '✅ Configured' : '❌ NOT SET — add to .env'}`);
-  console.log(`🤖  Model: ${GROQ_MODEL}\n`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`\n🛍️  SmartBuy AI Server running on http://localhost:${PORT}`);
+    console.log(`📡  Groq API Key: ${GROQ_API_KEY ? '✅ Configured' : '❌ NOT SET — add to .env'}`);
+    console.log(`🤖  Primary Model: ${PRIMARY_MODEL}`);
+    console.log(`🔄  Candidate Models: ${MODEL_CANDIDATES.join(', ')}\n`);
+  });
+}
 
 module.exports = app;

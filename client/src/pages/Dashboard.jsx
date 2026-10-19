@@ -49,6 +49,10 @@ export default function DashboardPage() {
     setPriceAlerts(updated);
   };
 
+  const handleWishlistAdd = () => {
+    setWishlist(getWishlist());
+  };
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-[#111111]">
       <Sidebar
@@ -91,6 +95,7 @@ export default function DashboardPage() {
           preferences={preferences}
           onDeleteAlert={handleDeleteAlert}
           onToggleAlert={handleToggleAlert}
+          onWishlistAdd={handleWishlistAdd}
         />
       </div>
     </div>

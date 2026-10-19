@@ -1,7 +1,25 @@
-
+# Dependencies
 node_modules/
+
+# Environment variables & secrets (NEVER COMMIT)
 .env
-server/.env
-client/.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Build outputs
 dist/
 build/
+client/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

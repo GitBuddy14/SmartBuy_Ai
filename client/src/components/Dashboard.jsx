@@ -194,7 +194,7 @@ export default function DashboardComponent({
         )}
 
         {/* ── Favorite categories ── */}
-        <FavoriteCategories categories={preferences?.preferredBrands || []} />
+        <FavoriteCategories categories={preferences?.categories || []} />
       </div>
     </div>
   );

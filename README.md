@@ -1,6 +1,6 @@
 # SmartBuy AI — Intelligent Shopping Agent
 
-> A production-ready AI shopping assistant powered by **Groq LLaMA 3** with a minimal ChatGPT-like UI.
+> A production-ready AI shopping assistant powered by **Groq AI** with a minimal ChatGPT-like UI.
 
 ---
 
@@ -32,7 +32,7 @@
 | HTTP | Axios |
 | Markdown | React Markdown + remark-gfm |
 | Backend | Node.js + Express |
-| AI | Groq API (LLaMA 3 70B) |
+| AI | Groq API (`openai/gpt-oss-120b` + auto-fallbacks) |
 | State | React hooks + localStorage |
 
 ---
@@ -79,10 +79,11 @@ smartbuy-ai/
 │
 ├── server/                  # Express backend
 │   ├── index.js             # Main server file
-│   ├── .env                 # Environment variables (not committed)
-│   ├── .env.example         # Example env file
+│   ├── .env.example         # Example server env file
 │   └── package.json
 │
+├── .env.example             # Root example env file
+├── .gitignore               # Excludes secrets & node_modules
 ├── package.json             # Root package with concurrently
 └── README.md
 ```
@@ -105,8 +106,14 @@ cd smartbuy-ai
 ### 2. Set up environment
 
 ```bash
+# Copy template to .env
 cp server/.env.example server/.env
-# Edit server/.env and add your GROQ_API_KEY
+
+# Or at the root:
+cp .env.example .env
+
+# Edit .env and paste your Groq API key:
+# GROQ_API_KEY=gsk_...
 ```
 
 ### 3. Install all dependencies
@@ -117,8 +124,8 @@ npm run install:all
 
 # OR manually:
 npm install
-cd client && npm install
-cd ../server && npm install
+npm --prefix client install
+npm --prefix server install
 ```
 
 ### 4. Run the app
@@ -137,10 +144,10 @@ npm run dev
 
 ```bash
 # Backend only
-cd server && node index.js
+npm run server
 
 # Frontend only
-cd client && npm run dev
+npm run client
 
 # Both (from root)
 npm run dev
@@ -191,10 +198,11 @@ The architecture is designed to be compatible with IBM Orchestrate / IBM BOB age
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `GROQ_API_KEY` | ✅ Yes | Groq API key from console.groq.com |
-| `PORT` | No | Server port (default: 5000) |
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GROQ_API_KEY` | ✅ Yes | — | Groq API key from [console.groq.com](https://console.groq.com) |
+| `GROQ_MODEL` | No | `openai/gpt-oss-120b` | AI model name (has automatic fallback to `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) |
+| `PORT` | No | `5000` | Express backend server port |
 
 ---
 
