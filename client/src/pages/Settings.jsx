@@ -37,7 +37,8 @@ export default function SettingsPage() {
 
   const checkApiStatus = async () => {
     try {
-      const res = await axios.get('/api/health');
+      const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '') + '/api';
+      const res = await axios.get(`${apiBase}/health`);
       setApiStatus(res.data.status === 'ok' ? 'online' : 'error');
     } catch {
       setApiStatus('error');
